@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Z0 Mandel Matrix - Interactive Visualization</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, Roboto, Arial, sans-serif;
+      margin: 12px;
+      background-color: #111;
+      color: #eee;
+    }
+    header {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    h2 { margin: 0; }
+    #controls {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    label { font-size: 13px; }
+    input[type=number] { width: 90px; }
+    input[type=range] { width: 320px; }
+    canvas {
+      display: block;
+      margin-top: 12px;
+      border: 1px solid #333;
+      image-rendering: pixelated;
+    }
+    button {
+      padding: 6px 10px;
+      border-radius: 6px;
+      border: 0;
+      background: #2b6;
+      color: #002;
+      cursor: pointer;
+    }
+    .muted { color: #aaa; font-size: 12px; }
+    #progress {
+      height: 8px;
+      background: #222;
+      border-radius: 6px;
+      overflow: hidden;
+      margin-top: 6px;
+      width: 40%;
+    }
+    #progress > i {
+      display: block;
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg,#ffd86b,#ff6b6b);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h2>Z0 Mandel Matrix</h2>
+  </header>
+
+  <div id="controls">
+    <label>Resolution
+      <input id="resolution" type="number" min="8" max="200" step="1" value="80">
+    </label>
+    <button id="renderBtn">Render</button>
+    <button id="downloadBtn">Download Image</button>
+  </div>
+
+  <div style="margin-top:6px; display:flex; align-items:center; gap:10px; flex-wrap:wrap">
+    <label style="display:flex; align-items:center; gap:8px">
+      Similarity Threshold <span id="threshVal">10.00</span>
+      <input id="simThresh" type="range" min="0" max="19" step="0.01" value="10">
+    </label>
+    <span class="muted">Black = similar, White = dissimilar</span>
+  </div>
+
+  <div id="progress"><i></i></div>
+  <canvas id="cv"></canvas>
+
+  <script>
+  // ===============================
+  // Z0 Mandel Matrix - Interactive Similarity Visualization
+  // ===============================
+
+  let lastData = null;
+
+  /**
+   * Iterate Mandelbrot for a single point
+   * @param {number} c_re - Real part of c
+   * @param {number} c_im - Imag part of c
+   * @param {number} z0r - Real part of z0
+   * @param {number} z0i - Imag part of z0
+   * @param {number} maxIter - Maximum iterations
+   * @param {number} escapeRadius - Escape threshold
+   */
+  function iterate(c_re, c_im, z0r, z0i, maxIter, escapeRadius){
+    let zr = z0r, zi = z0i;
+    let iter = 0;
+    for(; iter < maxIter; iter++){
+      const zr2 = zr*zr, zi2 = zi*zi;
+      if(zr2 + zi2 > escapeRadius*escapeRadius) break;
+      const nzr = zr2 - zi2 + c_re;
+      const nzi = 2*zr*zi + c_im;
+      zr = nzr; zi = nzi;
+    }
+    return iter;
+  }
+
+  /**
+   * Compute similarity grid for all z0
+   * @param {Object} opts - Options {gridN, maxIter, escapeRadius, z0Radius}
+   * @param {Function} onProgress - Optional progress callback
+   */
+  async function computeSimilarityGrid(opts, onProgress){
+    const {gridN, maxIter, escapeRadius, z0Radius} = opts;
+    const w = gridN, h = gridN;
+
+    const z0Real = new Float64Array(gridN);
+    const z0Imag = new Float64Array(gridN);
+    for(let i=0;i<gridN;i++) z0Real[i] = -z0Radius + 2*z0Radius * (i / (gridN-1));
+    for(let j=0;j<gridN;j++) z0Imag[j] = -z0Radius + 2*z0Radius * (j / (gridN-1));
+
+    const reMin = -2.0, reMax = 1.0;
+    const imMin = -1.5, imMax = 1.5;
+
+    const simVals = new Float32Array(gridN*gridN);
+    let panelIdx = 0;
+    const totalPanels = gridN*gridN;
+    const samples = 5; // 5x5 per panel
+
+    return new Promise((resolve)=>{
+      function processChunk(){
+        const end = Math.min(totalPanels, panelIdx + 200);
+        for(; panelIdx < end; panelIdx++){
+          const py = Math.floor(panelIdx / gridN);
+          const px = panelIdx % gridN;
+          const z0r = z0Real[px];
+          const z0i = z0Imag[py];
+
+          let diffSum = 0;
+          for(let sy=0; sy<samples; sy++){
+            const c_im = imMin + (imMax - imMin) * (sy/(samples-1));
+            for(let sx=0; sx<samples; sx++){
+              const c_re = reMin + (reMax - reMin) * (sx/(samples-1));
+              const itMeta = iterate(c_re,c_im,z0r,z0i,maxIter,escapeRadius);
+              const itClassic = iterate(c_re,c_im,0,0,maxIter,escapeRadius);
+              diffSum += Math.abs(itMeta - itClassic);
+            }
+          }
+          simVals[panelIdx] = diffSum / (samples*samples);
+        }
+        if(onProgress) onProgress(panelIdx/totalPanels);
+        if(panelIdx < totalPanels){
+          setTimeout(processChunk,0);
+        } else {
+          resolve({w,h,z0Real,z0Imag,gridN,simVals});
+        }
+      }
+      processChunk();
+    });
+  }
+
+  /**
+   * Draw similarity matrix on canvas
+   * @param {Object} data - Grid data
+   * @param {number} threshold - Similarity threshold
+   */
+  function drawMatrix(data, threshold){
+    const {gridN,simVals} = data;
+    const canvas = document.getElementById('cv');
+    canvas.width = gridN; canvas.height = gridN;
+    canvas.style.width = Math.min(800, gridN*4)+'px';
+    const ctx = canvas.getContext('2d');
+    const img = ctx.createImageData(gridN, gridN);
+
+    for(let i=0;i<simVals.length;i++){
+      const val = simVals[i];
+      const col = val <= threshold ? 0 : 255;
+      const px = (i % gridN);
+      const py = Math.floor(i / gridN);
+      const idx = (py*gridN + px) * 4;
+      img.data[idx+0] = col;
+      img.data[idx+1] = col;
+      img.data[idx+2] = col;
+      img.data[idx+3] = 255;
+    }
+    ctx.putImageData(img,0,0);
+  }
+
+  // ===============================
+  // Event Listeners
+  // ===============================
+  document.getElementById('renderBtn').addEventListener('click', async ()=>{
+    const gridN = parseInt(document.getElementById('resolution').value);
+    const progressBar = document.querySelector('#progress > i');
+    progressBar.style.width = '0%';
+    document.getElementById('renderBtn').disabled = true;
+    document.getElementById('downloadBtn').disabled = true;
+
+    const opts = {gridN, panelSize:20, maxIter:100, escapeRadius:2.0, z0Radius:2.0};
+    try{
+      const data = await computeSimilarityGrid(opts,(p)=>{ progressBar.style.width = Math.floor(p*100)+'%'; });
+      lastData = data;
+      const simSlider = document.getElementById('simThresh');
+      drawMatrix(data, parseFloat(simSlider.value));
+      progressBar.style.width = '100%';
+    } finally {
+      document.getElementById('renderBtn').disabled = false;
+      document.getElementById('downloadBtn').disabled = false;
+    }
+  });
+
+  document.getElementById('simThresh').addEventListener('input', (e)=>{
+    const v = parseFloat(e.target.value);
+    document.getElementById('threshVal').textContent = v.toFixed(2);
+    if(lastData) drawMatrix(lastData,v);
+  });
+
+  document.getElementById('downloadBtn').addEventListener('click', ()=>{
+    const canvas = document.getElementById('cv');
+    const url = canvas.toDataURL('image/png');
+    const a = document.createElement('a');
+    a.href = url; a.download = 'Z0MandelMatrix.png';
+    a.click();
+  });
+
+  window.addEventListener('load', ()=>{ document.getElementById('renderBtn').click(); });
+  </script>
+</body>
+</html>
